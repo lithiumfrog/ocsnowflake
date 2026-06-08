@@ -1,7 +1,9 @@
 package ocsnowflake
 
 import (
+    "database/sql/driver"
     "errors"
+    "fmt"
     "strconv"
     "strings"
     "sync"
@@ -156,6 +158,48 @@ func (id *ID) UnmarshalJSON(b []byte) error {
     }
 
     *id = ID(value)
+    return nil
+}
+
+// driverValuer asserts that ID satisfies driver.Valuer for database/sql writes.
+var _ driver.Valuer = ID(0)
+
+// Value implements driver.Valuer so an ID can be written to a SQL BIGINT column.
+// Postgres BIGINT is a signed int64; ID is a uint64 of the same 8 bytes, so the
+// value is reinterpreted via two's complement rather than range-checked. This is
+// lossless across the entire uint64 range, including IDs with the high bit set.
+func (id ID) Value() (driver.Value, error) {
+    return int64(id), nil
+}
+
+// Scan implements sql.Scanner so an ID can be read from a SQL value. Drivers may
+// deliver the value as int64 (the usual pgx/BIGINT path), uint64, or as text, so
+// each is handled. The int64<->uint64 conversion is a bit-level reinterpretation
+// and round-trips Value losslessly. A NULL is decoded as 0, matching UnmarshalJSON;
+// use *ID or sql.Null* for genuinely nullable columns.
+func (id *ID) Scan(src any) error {
+    switch v := src.(type) {
+    case int64:
+        *id = ID(uint64(v))
+    case uint64:
+        *id = ID(v)
+    case nil:
+        *id = 0
+    case []byte:
+        parsed, err := ParseBytes(v)
+        if err != nil {
+            return err
+        }
+        *id = parsed
+    case string:
+        parsed, err := ParseString(v)
+        if err != nil {
+            return err
+        }
+        *id = parsed
+    default:
+        return fmt.Errorf("ocsnowflake: cannot scan %T into ID", src)
+    }
     return nil
 }
 

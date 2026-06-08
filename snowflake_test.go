@@ -1,12 +1,18 @@
 package ocsnowflake
 
 import (
+    "database/sql"
+    "database/sql/driver"
     "encoding/json"
     "fmt"
     "sync"
     "testing"
     "time"
 )
+
+// scanner asserts that *ID satisfies sql.Scanner. Kept in the test file so the
+// library itself does not depend on the heavier database/sql package.
+var _ sql.Scanner = (*ID)(nil)
 
 func TestNewNodeValidation(t *testing.T) {
     if _, err := NewNode(-1); err == nil {
@@ -114,6 +120,103 @@ func TestHelpersAndJSON(t *testing.T) {
     if decoded != original {
         t.Fatal("json roundtrip mismatch")
     }
+}
+
+func TestValueScanRoundTrip(t *testing.T) {
+    cases := []struct {
+        name string
+        id   ID
+    }{
+        {"zero", 0},
+        {"small", 1},
+        {"typical", ID(0x0123456789ABCDEF)},
+        {"high-bit-set", ID(0xFFFFFFFFFFFFFFFF)},
+    }
+
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            v, err := tc.id.Value()
+            if err != nil {
+                t.Fatalf("Value failed: %v", err)
+            }
+
+            i64, ok := v.(int64)
+            if !ok {
+                t.Fatalf("Value returned %T, want int64", v)
+            }
+
+            var got ID
+            if err := got.Scan(i64); err != nil {
+                t.Fatalf("Scan failed: %v", err)
+            }
+
+            if got != tc.id {
+                t.Fatalf("round trip mismatch: want %d got %d", tc.id, got)
+            }
+        })
+    }
+}
+
+func TestValueHighBitIsNegativeInt64(t *testing.T) {
+    v, err := ID(0xFFFFFFFFFFFFFFFF).Value()
+    if err != nil {
+        t.Fatalf("Value failed: %v", err)
+    }
+    if v.(int64) != -1 {
+        t.Fatalf("expected int64(-1) for all-ones ID, got %v", v)
+    }
+}
+
+func TestScanSourceTypes(t *testing.T) {
+    const want = ID(0xFFFFFFFFFFFFFFFF)
+
+    cases := []struct {
+        name string
+        src  any
+        want ID
+    }{
+        {"int64", int64(-1), want},
+        {"uint64", uint64(0xFFFFFFFFFFFFFFFF), want},
+        {"bytes", []byte("18446744073709551615"), want},
+        {"string", "18446744073709551615", want},
+        {"nil", nil, 0},
+    }
+
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            var got ID
+            if err := got.Scan(tc.src); err != nil {
+                t.Fatalf("Scan(%T) failed: %v", tc.src, err)
+            }
+            if got != tc.want {
+                t.Fatalf("Scan(%T) mismatch: want %d got %d", tc.src, tc.want, got)
+            }
+        })
+    }
+}
+
+func TestScanUnsupportedType(t *testing.T) {
+    var id ID
+    if err := id.Scan(3.14); err == nil {
+        t.Fatal("expected error scanning float64 into ID")
+    }
+    if err := id.Scan(struct{}{}); err == nil {
+        t.Fatal("expected error scanning struct{} into ID")
+    }
+}
+
+func TestScanInvalidText(t *testing.T) {
+    var id ID
+    if err := id.Scan("not-a-number"); err == nil {
+        t.Fatal("expected error scanning non-numeric string")
+    }
+    if err := id.Scan([]byte("nope")); err == nil {
+        t.Fatal("expected error scanning non-numeric bytes")
+    }
+}
+
+func TestValuerInterface(t *testing.T) {
+    var _ driver.Valuer = ID(0)
 }
 
 func TestEpochOverride(t *testing.T) {

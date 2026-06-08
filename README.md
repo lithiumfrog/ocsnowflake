@@ -122,6 +122,11 @@ import sf "github.com/lithiumfrog/ocsnowflake"
 	- `func (f *ID) UnmarshalJSON(b []byte) error`
 	- JSON is encoded as a quoted decimal string (safe for JavaScript and large integers).
 
+- Database (`database/sql` / `driver`)
+	- `func (f ID) Value() (driver.Value, error)`
+	- `func (f *ID) Scan(src any) error`
+	- Implements `driver.Valuer` and `sql.Scanner` so an ID round-trips through a Postgres `BIGINT` (signed `int64`) column via two's-complement reinterpretation—lossless across the full `uint64` range. `Scan` accepts `int64`, `uint64`, `[]byte`/`string` (decimal), and `nil` (→ 0).
+
 
 ## ID layout
 
@@ -249,6 +254,18 @@ id4, _ := sf.ParseBytes([]byte("123456789012345678"))
 
 // From uint64
 id5 := sf.ParseUint64(42)
+```
+
+An `ID` can be written to and read from a SQL `BIGINT` column directly (works
+with `database/sql` and pgx):
+
+```go
+// Write: ID is stored as the column's signed int64.
+_, _ = db.Exec("INSERT INTO things (id) VALUES ($1)", id)
+
+// Read: scans the int64 back into an ID losslessly.
+var got sf.ID
+_ = db.QueryRow("SELECT id FROM things WHERE id = $1", id).Scan(&got)
 ```
 
 
